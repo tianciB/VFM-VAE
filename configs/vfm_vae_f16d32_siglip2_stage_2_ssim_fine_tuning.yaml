@@ -1,0 +1,180 @@
+# -----------------------------------------------------------------------------
+# VFM-VAE Training Config (Lite, ImageNet-1k, FP16) - SSIM Fine-tuning
+# Please refer to configs/vfm_vae_details.yaml for more details.
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Experiment setup
+# -----------------------------------------------------------------------------
+run_dir: your_path/vfm_vae_f16d32_siglip2_ssim_fine_tuning_imagenet_1k_fp16
+random_seed: 42
+
+wandb_project_name: VFM-VAE
+wandb_run_name: vfm_vae_f16d32_siglip2_ssim_fine_tuning_imagenet_1k_fp16
+
+# -----------------------------------------------------------------------------
+# Dataset
+# -----------------------------------------------------------------------------
+training_set_kwargs:
+  class_name: training.data_wds.WdsWrapper
+  path: your_path/imagenet_1k_wds_train/
+  resolution: 256
+  conditional: False
+  label_type: cls2text
+  filter_keys_path: imagenet_info/imagenet_train_hr_256_indices.pkl
+  cls_to_text_path: imagenet_info/imagenet_1k_cls_to_text.json
+  data_augmentation: True
+  one_epoch: False
+
+# -----------------------------------------------------------------------------
+# Generator (VFM-VAE unified encoder-decoder)
+# -----------------------------------------------------------------------------
+G_kwargs:
+  class_name: networks.generator.Generator
+
+  # Vision Foundation Model backbone
+  vfm_name: your_path/huggingface/siglip2-large-patch16-512
+  scale_factor: 2.0 # for 256x256 images with 512x512 VFM input size
+
+  # Patch feature extraction
+  patch_from_layers: [0, 12, -1]
+  patch_in_dimensions: [1024, 1024, 1024]
+  patch_out_dimensions: [64, 64, 64]
+
+  # Latent compression settings
+  compression_mode: continuous
+  how_to_compress: attnproj
+  how_to_decompress: attnproj
+  decompress_factor: 16
+  attnproj_quant_layers: 1
+  attnproj_post_quant_layers: 1
+
+  # Latent space (z)
+  resolution_compression_factor: 16
+  z_dimension: 32
+  z_pooled_resolution: 1
+  z_dim_for_mapping_mlp_output: 512
+
+  # Alignment settings
+  use_kl_loss: False        
+  use_vf_loss: False
+  distmat_margin: 0.0
+  cos_margin: 0.0
+  distmat_weight: 1.0
+  cos_weight: 1.0
+
+  # Concatenated z
+  concat_z_block_indices: [0, 1, 2, 3]
+  concat_z_mapped_dims: [512, 256, 128, 128]
+  how_to_process_concat_z: unshuffle
+  activation_for_concat_z: lrelu
+
+  # Attention architecture
+  attn_block_indices: [0, 1, 2]
+  attn_depths: [2, 2, 2]
+  use_self_attn: True
+  use_cross_attn: False
+  use_convnext: True
+  use_gaussian_blur: True
+  add_additional_convnext: True
+  equivariance_regularization_p_prior: 0.5
+  equivariance_regularization_p_prior_scale: 0.25
+
+  # Precision & training
+  num_blocks: 6
+  num_fp16_res: 3
+  train_mode: train_decoder
+
+  # Image output
+  img_channels: 3
+
+  # Generator synthesis structure (lite version here, consistent with StyleGAN-T)
+  synthesis_kwargs:
+    channel_base: 32768
+    channel_max: 512
+    num_res_blocks: 2
+    architecture: skip
+
+  legacy: True  # whether to enable ConvNeXt-style noise injection
+                # exists for backward compatibility with older 256×256 pretrained models
+                # where noise injection was mistakenly enabled
+                # recommended: False for all new or dynamic-resolution training
+
+# -----------------------------------------------------------------------------
+# Discriminator (StyleGAN-T + PatchGAN hybrid)
+# -----------------------------------------------------------------------------
+D_kwargs:
+  class_name: networks.discriminator.ProjectedDiscriminator
+  use_stylegan_t_discriminator: True
+  use_patchgan_discriminator: False
+  get_interm_feat: False
+
+# -----------------------------------------------------------------------------
+# Loss configuration
+# -----------------------------------------------------------------------------
+loss_kwargs:
+  class_name: training.loss.TotalLoss
+
+  # KL & VF losses
+  compression_mode: continuous
+  kl_loss_weight: 0.0
+  vf_loss_weight: 0.0
+  use_adaptive_vf_loss: False
+
+  # Reconstruction losses
+  l1_pixel_loss_weight: 1.0
+  l2_pixel_loss_weight: 0.0
+  perceptual_loss_weight: 2.0
+  ssim_loss_weight: 1.0
+
+  # Multi-scale pixel losses
+  multiscale_block_indices: [0, 1, 2, 3, 4]
+  multiscale_pixel_loss_weights: [0.1, 0.1, 0.1, 0.1, 0.1]
+  multiscale_pixel_loss_start_kimg: 0
+  multiscale_pixel_loss_end_kimg: 5000
+
+  # GAN losses
+  stylegan_t_discriminator_loss_weight: 1.0
+  patchgan_discriminator_loss_weight: 0.0
+  feature_matching_loss_weight: 0.0
+
+  # Warm-up and regularization
+  use_stylegan_t_disc_warmup: False
+  use_patchgan_disc_warmup: False
+  use_equivariance_regularization: True
+
+# -----------------------------------------------------------------------------
+# Optimizers
+# -----------------------------------------------------------------------------
+G_opt_kwargs:
+  class_name: torch.optim.Adam
+  lr: 5.0e-5
+  betas: [0.0, 0.99]
+  eps: 1.0e-8
+
+D_opt_kwargs:
+  class_name: torch.optim.Adam
+  lr: 5.0e-5
+  betas: [0.0, 0.99]
+  eps: 1.0e-8
+
+# -----------------------------------------------------------------------------
+# Training setup (flattened to match training_loop)
+# -----------------------------------------------------------------------------
+batch_gpu: 32                 # batch size per GPU, we use 8 GPUs default
+kimg_per_tick: 10             # 10k images per tick for logging and snapshotting
+image_snapshot_ticks: 100     # 100 ticks for image snapshotting
+network_snapshot_ticks: 100   # 100 ticks for network snapshotting
+total_kimg: 41000             # total training images in thousands
+
+ema_kimg: 160.0               # equals batch_gpu * num_gpus * 10 / 32
+ema_rampup: 0.05              # if resume, set to None
+metrics: []
+cudnn_benchmark: True
+
+# -----------------------------------------------------------------------------
+# Resume / Misc
+# -----------------------------------------------------------------------------
+resume_path: your_path/weak_alignment_checkpoint.pth
+resume_kimg: 40000
+resume_discriminator: True

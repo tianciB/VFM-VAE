@@ -1,0 +1,469 @@
+# ==============================================================
+# Extract intermediate DiT features from SiT.
+# ==============================================================
+
+
+import os
+import sys
+import warnings
+import argparse
+import torch
+import torch.distributed as dist
+
+from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from tqdm import tqdm
+from glob import glob
+from safetensors import safe_open
+
+# Disable torch.compile to avoid symbolic_shapes warnings
+os.environ['TORCH_COMPILE_DISABLE'] = '1'
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# Import local modules
+sys.path.append('.')
+from models import SiT_models
+from transport import create_transport
+from download import find_model
+
+
+class LatentDataset(Dataset):
+    """Dataset for loading latent features from safetensors with image names."""
+    
+    def __init__(self, input_dir):
+        self.input_dir = input_dir
+        
+        # Get all safetensor files
+        self.files = sorted(glob(os.path.join(input_dir, "*.safetensors")))
+        print(f"Found {len(self.files)} safetensor files")
+        
+        # Build mapping from index to file and position
+        self.img_to_file_map = self.get_img_to_safefile_map()
+        
+        # Load latent statistics for normalization
+        self._latent_mean, self._latent_std = self.get_latent_stats()
+        print("✅ Using latent norm: True")
+            
+        # Extract image names for sorting
+        self.image_names = self.extract_image_names()
+        
+    def get_img_to_safefile_map(self):
+        """Create mapping from image index to safetensor file and position."""
+        img_to_file = {}
+        for safe_file in self.files:
+            with safe_open(safe_file, framework="pt", device="cpu") as f:
+                # Try to get the number of items in the file
+                try:
+                    latents = f.get_slice('latents')
+                    num_imgs = latents.get_shape()[0]
+                except:
+                    labels = f.get_slice('labels')
+                    num_imgs = labels.get_shape()[0]
+                
+                cur_len = len(img_to_file)
+                for i in range(num_imgs):
+                    img_to_file[cur_len + i] = {
+                        'safe_file': safe_file,
+                        'idx_in_file': i
+                    }
+        return img_to_file
+    
+    def get_latent_stats(self):
+        """Load latent statistics from cache file."""
+        latent_stats_cache_file = os.path.join(self.input_dir, "latents_stats.pt")
+        if not os.path.exists(latent_stats_cache_file):
+            raise FileNotFoundError(f"latents_stats.pt not found in {self.input_dir}")
+        
+        latent_stats = torch.load(latent_stats_cache_file, map_location='cpu')
+        return latent_stats['mean'], latent_stats['std']
+    
+    def extract_image_names(self):
+        """Extract image names from all safetensor files."""
+        names = []
+        for idx in range(len(self.img_to_file_map)):
+            img_info = self.img_to_file_map[idx]
+            safe_file, img_idx = img_info['safe_file'], img_info['idx_in_file']
+            
+            with safe_open(safe_file, framework="pt", device="cpu") as f:
+                # Try to get names directly
+                try:
+                    name_tensor = f.get_slice('names')
+                    name = name_tensor[img_idx]
+                    
+                    # Convert bytes to string
+                    if isinstance(name, torch.Tensor) and name.dtype == torch.uint8:
+                        # Remove padding zeros and convert to string
+                        bytes_data = name.cpu().numpy()
+                        bytes_data = bytes_data[bytes_data != 0]
+                        name = bytes(bytes_data).decode('utf-8')
+                    
+                    # Remove file extension
+                    name = os.path.splitext(name)[0]
+                    
+                except:
+                    # Fallback: use index as name
+                    name = f"image_{idx:06d}"
+            
+            names.append(name)
+
+        return names
+    
+    def __len__(self):
+        return len(self.img_to_file_map)
+    
+    def __getitem__(self, idx):
+        img_info = self.img_to_file_map[idx]
+        safe_file, img_idx = img_info['safe_file'], img_info['idx_in_file']
+        
+        with safe_open(safe_file, framework="pt", device="cpu") as f:
+            # Load latent feature
+            latents = f.get_slice('latents')
+            feature = latents[img_idx:img_idx+1].squeeze(0)  # Remove batch dimension
+            
+            # Load label if available
+            try:
+                labels = f.get_slice('labels')
+                label = labels[img_idx:img_idx+1].squeeze(0)
+            except:
+                label = torch.tensor(0)  # Default label
+
+        # Apply normalization if needed
+        feature = (feature - self._latent_mean.squeeze(dim=0)) / self._latent_std.squeeze(dim=0)
+        
+        return {
+            'latent': feature,
+            'label': label,
+            'name': self.image_names[idx],
+            'idx': idx
+        }
+
+
+def setup_distributed():
+    """Setup distributed training environment."""
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+    else:
+        print("Not using distributed mode")
+        return 0, 1, 0
+    
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    dist.barrier()
+    
+    return rank, world_size, local_rank
+
+
+def cleanup_distributed():
+    """Clean up distributed training resources."""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def load_model_from_checkpoint(model_name, checkpoint_path, device, **model_kwargs):
+    """Load SiT model from checkpoint."""
+    # Create model
+    model = SiT_models[model_name](**model_kwargs)
+    
+    # Load checkpoint
+    if checkpoint_path:
+        print(f"Loading checkpoint from {checkpoint_path}")
+        
+        # Use find_model function to handle different checkpoint formats
+        if os.path.isfile(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        else:
+            # Try to download/find pre-trained model
+            checkpoint = find_model(checkpoint_path)
+        
+        # Handle different checkpoint formats
+        if "ema" in checkpoint:
+            state_dict = checkpoint["ema"]
+        elif 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        elif 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        else:
+            state_dict = checkpoint
+        
+        # Remove 'module.' prefix if present (from DDP training)
+        if isinstance(state_dict, dict):
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        
+        model.load_state_dict(state_dict, strict=False)
+        print("Model loaded successfully")
+    
+    model = model.to(device)
+    model.eval()
+    
+    return model
+
+
+def forward_with_features(model, x, t, y, print_shapes=False):
+    """Forward pass through SiT model and extract features from each stage."""
+    features = {}
+    
+    # Initial embedding
+    x = model.x_embedder(x) + model.pos_embed  # (N, T, D)
+    t_emb = model.t_embedder(t)                # (N, D)
+    y_emb = model.y_embedder(y, train=False)   # (N, D)
+    c = t_emb + y_emb                          # (N, D)
+    
+    if print_shapes:
+        print(f"\n=== Feature Shapes Before Mean Pooling ===")
+        print(f"Initial embedding (x_embedder + pos_embed): {x.shape}")
+        print(f"Timestep embedding (t_embedder): {t_emb.shape}")
+        print(f"Label embedding (y_embedder): {y_emb.shape}")
+        print(f"Combined conditioning (c): {c.shape}")
+    
+    # Save embedder output (apply spatial mean pooling)
+    if print_shapes:
+        print(f"Embedder output before mean: {x.shape} -> after mean: {x.mean(dim=1).shape}")
+    features['embedder'] = x.mean(dim=1)  # (N, D) - spatial mean of patches    
+    
+    # Pass through each block and collect features
+    for i, block in enumerate(model.blocks):
+        x = block(x, c)  # SiT blocks don't need feat_rope parameter
+        
+        if print_shapes and i < 3:  # Print first 3 blocks
+            print(f"Block {i} output before mean: {x.shape} -> after mean: {x.mean(dim=1).shape}")
+        elif print_shapes and i == 3:
+            print(f"... (blocks 3-{len(model.blocks)-1} have same shape pattern)")
+        
+        # Apply spatial mean pooling: (N, T, D) -> (N, D)
+        block_feature = x.mean(dim=1)  # Average over spatial dimension
+        features[f'block_{i}'] = block_feature
+    
+    # Final layer
+    final_output = model.final_layer(x, c)  # (N, T, patch_size ** 2 * out_channels)
+    
+    if print_shapes:
+        print(f"Final layer output before mean: {final_output.shape} -> after mean: {final_output.mean(dim=1).shape}")
+        print(f"=== End of Feature Shapes ===\n")
+    
+    # Save final layer output (apply spatial mean pooling)
+    final_feature = final_output.mean(dim=1)  # (N, patch_size ** 2 * out_channels)
+    features['final_layer'] = final_feature
+    
+    return features
+
+
+def add_noise_to_latent(latent, t, transport):
+    """Add noise to latent at given timestep t."""
+    noise = torch.randn_like(latent)
+    t_expanded = t.view(-1, 1, 1, 1).expand_as(latent)
+    noisy_latent = (1 - t_expanded) * latent + t_expanded * noise
+    return noisy_latent
+
+
+def save_features_separately(features_dict, names, indices, output_prefix, timestep, rank, world_size, device):
+    """Save each feature type separately."""
+    if world_size > 1:
+        gathered_features = {}
+        gathered_names = [None for _ in range(world_size)]
+        gathered_indices = [None for _ in range(world_size)]
+        
+        dist.all_gather_object(gathered_names, names)
+        dist.all_gather_object(gathered_indices, indices)
+        
+        for feature_name, local_features in features_dict.items():
+            if local_features.device != device:
+                local_features = local_features.to(device)
+            
+            gathered_feature_list = [torch.zeros_like(local_features) for _ in range(world_size)]
+            dist.all_gather(gathered_feature_list, local_features)
+            
+            gathered_features[feature_name] = torch.cat([f.cpu() for f in gathered_feature_list], dim=0)
+        
+        if rank == 0:
+            all_names = []
+            all_indices = []
+            for names_list, indices_list in zip(gathered_names, gathered_indices):
+                all_names.extend(names_list)
+                all_indices.extend(indices_list)
+        else:
+            return
+    else:
+        gathered_features = features_dict
+        all_names = names
+        all_indices = indices
+    
+    if rank == 0:
+        combined_data = list(zip(all_names, all_indices, range(len(all_names))))
+        combined_data.sort(key=lambda x: x[0])
+        
+        sorted_names, sorted_indices, sorted_positions = zip(*combined_data)
+        
+        os.makedirs(os.path.dirname(output_prefix), exist_ok=True)
+        
+        for feature_name, features in gathered_features.items():
+            sorted_features = torch.stack([features[pos] for pos in sorted_positions])
+            
+            save_dict = {
+                'features': sorted_features,
+                'names': list(sorted_names),
+                'num_images': sorted_features.shape[0],
+                'sorted': True,
+                'sorted_by': 'name',
+                'timestep': timestep,
+                'feature_name': feature_name,
+                'feature_dim': sorted_features.shape[1],
+            }
+            
+            output_path = f"{output_prefix}_{feature_name}_t{timestep:.3f}.pt"
+            torch.save(save_dict, output_path)
+            
+            print(f"Saved {feature_name} features to {output_path}")
+            print(f"Feature shape: {sorted_features.shape}")
+        
+        print(f"First 5 image names (sorted): {sorted_names[:5]}")
+        print(f"Total images processed: {len(sorted_names)}")
+
+
+@torch.no_grad()
+def extract_features(args, rank, world_size, local_rank):
+    """Extract features from SiT model."""
+    device = torch.device(f"cuda:{local_rank}")
+    
+    latent_size = args.image_size // 8
+    
+    model = load_model_from_checkpoint(
+        model_name=args.model,
+        checkpoint_path=args.checkpoint_path,
+        device=device,
+        input_size=latent_size,
+        num_classes=args.num_classes,
+        learn_sigma=True
+    )
+    
+    transport = create_transport(
+        args.path_type,
+        args.prediction,
+        args.loss_weight,
+        args.train_eps,
+        args.sample_eps
+    )
+    
+    dataset = LatentDataset(
+        input_dir=args.input_dir
+    )
+    
+    sampler = DistributedSampler(
+        dataset, 
+        num_replicas=world_size, 
+        rank=rank, 
+        shuffle=False
+    )
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        sampler=sampler,
+        num_workers=args.num_workers,
+        pin_memory=True
+    )
+    
+    all_features = {}
+    all_names = []
+    all_indices = []
+    
+    if rank == 0:
+        print(f"Processing {len(dataset)} samples with timestep t={args.timestep}")
+        print(f"Batch size: {args.batch_size}, Num workers: {args.num_workers}")
+        print(f"Using checkpoint: {args.checkpoint_path}")
+        print(f"Model: {args.model}")
+        print(f"Data path: {args.input_dir}")
+    
+    for batch in tqdm(dataloader, desc=f"Rank {rank}", disable=(rank != 0)):
+        latents = batch['latent'].to(device)
+        
+        if args.use_label:
+            labels = batch['label'].to(device)
+        else:
+            labels = torch.full((latents.size(0),), args.num_classes, dtype=torch.long, device=device)
+        
+        names = batch['name']
+        indices = batch['idx']
+        
+        batch_size = latents.shape[0]
+        t = torch.full((batch_size,), args.timestep, device=device, dtype=torch.float32)
+        
+        noisy_latents = add_noise_to_latent(latents, t, transport)
+        
+        print_shapes = len(all_features) == 0 and rank == 0
+        batch_features = forward_with_features(model, noisy_latents, 1 - t, labels, print_shapes)
+        
+        for feature_name, features in batch_features.items():
+            if feature_name not in all_features:
+                all_features[feature_name] = []
+            all_features[feature_name].append(features.cpu())
+        
+        all_names.extend(names)
+        all_indices.extend(indices.tolist())
+    
+    for feature_name in all_features:
+        all_features[feature_name] = torch.cat(all_features[feature_name], dim=0)
+    
+    save_features_separately(
+        all_features, 
+        all_names, 
+        all_indices, 
+        args.output_prefix, 
+        args.timestep, 
+        rank, 
+        world_size,
+        device
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Extract SiT features from latents")
+    
+    parser.add_argument("--input-dir", type=str, required=True,
+                       help="Directory containing safetensor files and latents_stats.pt")
+    parser.add_argument("--output-prefix", type=str, required=True,
+                       help="Output file prefix (e.g., 'results/features')")
+    parser.add_argument("--checkpoint-path", type=str, required=True,
+                       help="Path to model checkpoint or model name for auto-download")
+    
+    parser.add_argument("--model", type=str, choices=list(SiT_models.keys()), default="SiT-XL/2",
+                       help="SiT model architecture")
+    parser.add_argument("--image-size", type=int, choices=[256, 512], default=256,
+                       help="Image size for determining latent size")
+    parser.add_argument("--num-classes", type=int, default=1000,
+                       help="Number of classes")
+    
+    parser.add_argument("--path-type", type=str, default="Linear", choices=["Linear", "GVP", "VP"],
+                       help="Transport path type")
+    parser.add_argument("--prediction", type=str, default="velocity", choices=["velocity", "score", "noise"],
+                       help="Model prediction type")
+    parser.add_argument("--loss-weight", type=str, default=None, choices=[None, "velocity", "likelihood"],
+                       help="Loss weighting")
+    parser.add_argument("--train-eps", type=float, default=None,
+                       help="Training epsilon")
+    parser.add_argument("--sample-eps", type=float, default=None,
+                       help="Sampling epsilon")
+    
+    parser.add_argument("--timestep", type=float, default=0.5,
+                       help="Timestep t for adding noise (0.0 to 1.0)")
+    parser.add_argument("--batch-size", type=int, default=32,
+                       help="Batch size per GPU")
+    parser.add_argument("--num-workers", type=int, default=4,
+                       help="Number of data loading workers")
+
+    parser.add_argument("--use-label", action="store_true", default=False,
+                       help="Whether to use labels from dataset (default: False = use null label)")
+    
+    args = parser.parse_args()
+    
+    rank, world_size, local_rank = setup_distributed()
+    
+    try:
+        extract_features(args, rank, world_size, local_rank)
+    finally:
+        cleanup_distributed()
+
+
+if __name__ == "__main__":
+    main()

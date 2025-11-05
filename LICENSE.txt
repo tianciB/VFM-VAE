@@ -1,0 +1,56 @@
+VFM-VAE: Vision Foundation Models as Tokenizers for Latent Diffusion Models
+Copyright (c) 2025, Tianci Bi, Xi'an Jiaotong University.
+All rights reserved.
+
+=====================================================================
+License Summary
+=====================================================================
+
+This repository is primarily based on NVIDIA’s StyleGAN-T,
+which is distributed under the NVIDIA Non-Commercial License.
+Accordingly, the VFM-VAE framework and any derivative works thereof
+are provided for **research and educational purposes only**, and may not
+be used or intended for any commercial advantage or monetary gain.
+
+The NVIDIA Non-Commercial License text is preserved under:
+- licenses/LICENSE_STYLEGANT.txt
+
+=====================================================================
+Additional Integrated Components
+=====================================================================
+
+This repository also adapts small open-source components from:
+- pix2pixHD (BSD 2-Clause License)
+  https://github.com/NVIDIA/pix2pixHD
+  → license located at: licenses/LICENSE_PIX2PIXHD.txt
+
+- UniTok (MIT License)
+  https://github.com/FoundationVision/UniTok
+
+- GigaGAN (MIT License)
+  https://github.com/lucidrains/gigagan-pytorch
+
+All reused components remain under their original licenses,
+which are included or referenced in this repository.
+
+=====================================================================
+Attribution and Modifications
+=====================================================================
+
+All modifications, extensions, and newly implemented modules
+in VFM-VAE are © 2025 Tianci Bi, Xi’an Jiaotong University.
+
+When redistributing or reusing this work, please retain
+the above copyright notice, the list of integrated components,
+and the associated license texts without modification.
+
+=====================================================================
+Disclaimer
+=====================================================================
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+Users must comply with all corresponding upstream licenses when
+using or redistributing this work.

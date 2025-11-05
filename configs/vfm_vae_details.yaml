@@ -1,0 +1,192 @@
+# -----------------------------------------------------------------------------
+# Details configuration for VFM-VAE
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Experiment setup
+# -----------------------------------------------------------------------------
+run_dir: your_path/run_dir          # directory to save logs and model checkpoints
+random_seed: 42                     # random seed for reproducibility
+
+wandb_project_name: VFM-VAE         # Weights & Biases project name
+wandb_run_name: vfm_vae_experiment  # Weights & Biases run name
+
+# -----------------------------------------------------------------------------
+# Dataset
+# -----------------------------------------------------------------------------
+training_set_kwargs:
+  class_name: training.data_wds.WdsWrapper                          # dataset class, here using webdataset
+  path: your_path/imagenet_1k_wds_train/                            # path to the webdataset
+  resolution: 256                                                   # training image resolution
+  conditional: False                                                # whether to use conditional generation, default False
+  label_type: cls2text                                              # type of label conditioning, here using class-to-text
+  filter_keys_path: imagenet_info/imagenet_train_hr_indices.pkl     # path to filter keys for high-resolution images
+  cls_to_text_path: imagenet_info/imagenet_1k_cls_to_text.json      # path to class-to-text mapping JSON file
+  data_augmentation: True                                           # whether to apply data augmentation
+  one_epoch: False                                                  # whether to train for one epoch only  
+                                                                    # set to True for large-scale streaming datasets (e.g., WDS)  
+                                                                    # enables precise resume from interruption without reprocessing seen samples,  
+                                                                    # preventing redundant computation under limited training time
+
+
+# -----------------------------------------------------------------------------
+# Generator (VFM-VAE unified encoder-decoder)
+# -----------------------------------------------------------------------------
+G_kwargs:
+  class_name: networks.generator.Generator                            # vae class, consistent with StyleGAN-T architecture
+
+  # Vision foundation model (VFM) settings
+  vfm_name: your_path/huggingface/siglip2-large-patch16-512           # path to the pre-downloaded VFM model or model name
+  scale_factor: 2.0                                                   # scaling factor for input images to VFM, e.g., 2.0 for 256x256 input to 512x512 VFM
+  patch_from_layers: [0, 12, -1]                                      # which layers to extract patch features from
+  patch_in_dimensions: [1024, 1024, 1024]                             # input dimensions for each patch feature layer.
+                                                                      # exposed here because different feature levels (shallow / mid / deep)
+                                                                      # may have inconsistent channel dimensions across layers in some VFM models,
+                                                                      # requiring manual specification for correct fusion and projection.
+  patch_out_dimensions: [64, 64, 64]                                  # output dimensions for each patch feature layer
+
+  # Latent compression settings
+  compression_mode: continuous                                        # compression mode can be 'discrete' or 'continuous' (here using 'continuous')
+                                                                      # if using 'discrete', refer to discrete arguments of LDMAdapter in networks/utils/ldm_utils.py
+  how_to_compress: attnproj                                           # how to compress can be 'attnproj' (attention projection) or 'conv' (convolutional).
+  how_to_decompress: attnproj                                         # how to decompress can be 'attnproj' (attention projection) or 'conv' (convolutional).
+  decompress_factor: 16                                               # factor to scale the dimension after decompression, e.g., 32 -> 512
+  attnproj_quant_layers: 1                                            # number of attention projection layers before quantization
+  attnproj_post_quant_layers: 1                                       # number of attention projection layers after quantization
+
+  # Latent space (z) settings
+  resolution_compression_factor: 16                                   # factor to compress the image resolution to latent space resolution
+  z_dimension: 32                                                     # dimension of the latent space z
+  z_pooled_resolution: 1                                              # pooled resolution of latent space z for global representation
+  z_dim_for_mapping_mlp_output: 512                                   # output dimension after mapping MLP for global representation
+
+  # Alignment settings
+  use_kl_loss: True                                                   # whether to use KL loss
+  use_vf_loss: True                                                   # whether to use vision foundation alignment loss
+  distmat_margin: 0.0                                                 # margin for distance matrix loss in VF alignment
+  cos_margin: 0.0                                                     # margin for cosine similarity loss in VF alignment
+  distmat_weight: 1.0                                                 # weight for distance matrix loss in VF alignment
+  cos_weight: 1.0                                                     # weight for cosine similarity loss in VF alignment
+
+  # Concatenated z settings
+  concat_z_block_indices: [0, 1, 2, 3]                                # which synthesis blocks to concatenate z into
+  concat_z_mapped_dims: [512, 256, 128, 128]                          # mapped dimensions of concatenated z for each synthesis block
+  how_to_process_concat_z: unshuffle                                  # how to process concatenated z, can be 'unshuffle' or 'pooling', recommended 'unshuffle'
+  activation_for_concat_z: lrelu                                      # activation function for concatenated z, including 'lrelu', 'gelu', 'silu'.
+
+  # Attention settings
+  attn_block_indices: [0, 1, 2]                                       # which synthesis blocks to apply attention mechanism
+  attn_depths: [2, 2, 2]                                              # depth of attention layers in each attention block
+  use_self_attn: True                                                 # whether to use self-attention
+  use_cross_attn: False                                               # whether to use cross-attention with text conditioning, default False
+  use_convnext: True                                                  # whether to use ConvNeXt modulated blocks
+  use_gaussian_blur: True                                             # whether to use Gaussian blur in ConvNeXt blocks, recommended True
+  add_additional_convnext: True                                       # whether to add additional ConvNeXt blocks in low resolutions, recommended True
+  equivariance_regularization_p_prior: 0.5                            # if applying equivariance regularization, the p value for prior path
+  equivariance_regularization_p_prior_scale: 0.25                     # if applying equivariance regularization and using prior path, the p value for scaling
+
+  # Training settings
+  num_blocks: 6                                                       # total number of synthesis blocks
+  num_fp16_res: 3                                                     # number of highest-resolution blocks to use fp16
+  train_mode: train_all                                               # training mode, can be 'train_all', 'train_decoder', 'train_the_second_half_decoder'
+                                                                      # 'train_the_second_half_decoder' means training from the middle resolution block to the output
+
+  # Image settings
+  img_channels: 3                                                     # number of image output channels, e.g., 3 for RGB
+
+  # Synthesis structure settings (lite version here, consistent with StyleGAN-T)
+  synthesis_kwargs:
+    channel_base: 32768
+    channel_max: 512
+    num_res_blocks: 2
+    architecture: skip
+
+  legacy: True                                                        # whether to enable ConvNeXt-style noise injection
+                                                                      # exists for backward compatibility with older 256×256 pretrained models
+                                                                      # where noise injection was mistakenly enabled
+                                                                      # recommended: False for all new or dynamic-resolution training
+
+
+# -----------------------------------------------------------------------------
+# Discriminator (StyleGAN-T + PatchGAN hybrid)
+# -----------------------------------------------------------------------------
+D_kwargs:
+  class_name: networks.discriminator.ProjectedDiscriminator           # discriminator class, consistent with StyleGAN-T
+  use_stylegan_t_discriminator: True                                  # whether to use StyleGAN-T discriminator
+  use_patchgan_discriminator: False                                   # whether to use PatchGAN discriminator
+  get_interm_feat: False                                              # whether to get intermediate features for feature matching loss, when using PatchGAN discriminator
+
+
+# -----------------------------------------------------------------------------
+# Loss configuration
+# -----------------------------------------------------------------------------
+loss_kwargs:
+  class_name: training.loss.TotalLoss                                 # total loss class
+
+  # KL & VF losses
+  kl_loss_weight: 1.0e-6                                              # weight for KL loss
+  vf_loss_weight: 5.0                                                 # weight for vision foundation alignment loss
+  use_adaptive_vf_loss: True                                          # whether to use adaptive weighting for VF alignment loss
+
+  # Reconstruction losses
+  l1_pixel_loss_weight: 1.0                                           # weight for L1 pixel loss
+  l2_pixel_loss_weight: 0.0                                           # weight for L2 pixel loss
+  perceptual_loss_weight: 10.0                                        # weight for perceptual loss
+  ssim_loss_weight: 0.0                                               # weight for SSIM loss
+
+  # Multi-scale pixel losses
+  multiscale_block_indices: [0, 1, 2, 3, 4]                            # which synthesis blocks to apply multi-scale pixel losses
+  multiscale_pixel_loss_weights: [0.1, 0.1, 0.1, 0.1, 0.1]             # weights for multi-scale pixel losses at each block
+  multiscale_pixel_loss_start_kimg: 0                                  # kimg to start applying multi-scale pixel losses
+  multiscale_pixel_loss_end_kimg: 5000                                 # kimg to end applying multi-scale pixel losses
+
+  # GAN losses
+  stylegan_t_discriminator_loss_weight: 1.0                           # weight for StyleGAN-T discriminator loss
+  patchgan_discriminator_loss_weight: 0.0                             # weight for PatchGAN discriminator loss
+  feature_matching_loss_weight: 0.0                                   # weight for feature matching loss when using PatchGAN discriminator
+
+  # Warm-up and regularization
+  use_stylegan_t_disc_warmup: False                                   # whether to use warm-up for StyleGAN-T discriminator, default False
+  use_patchgan_disc_warmup: False                                     # whether to use warm-up for PatchGAN discriminator, default False
+  use_equivariance_regularization: True                               # whether to use equivariance regularization, recommended True
+                                                                      # disabling this will significantly accelerate convergence in default-resolution reconstruction
+                                                                      # but enabling it can slightly improve subsequent generation quality
+
+
+# -----------------------------------------------------------------------------
+# Optimizers
+# -----------------------------------------------------------------------------
+G_opt_kwargs:
+  class_name: torch.optim.Adam                                        # optimizer class for generator
+  lr: 1.0e-4                                                          # learning rate for generator
+  betas: [0.0, 0.99]                                                  # Adam betas
+  eps: 1.0e-8                                                         # Adam epsilon
+
+D_opt_kwargs:
+  class_name: torch.optim.Adam                                        # optimizer class for discriminator
+  lr: 1.0e-4                                                          # learning rate for discriminator
+  betas: [0.0, 0.99]                                                  # Adam betas
+  eps: 1.0e-8                                                         # Adam epsilon
+
+
+# -----------------------------------------------------------------------------
+# Training setup (flattened to match training_loop)
+# -----------------------------------------------------------------------------
+batch_gpu: 32                                                         # batch size per GPU, we use 8 GPUs default
+kimg_per_tick: 10                                                     # kimg per training tick
+image_snapshot_ticks: 100                                             # the number of ticks between image snapshotting
+network_snapshot_ticks: 100                                           # the number of ticks between network snapshotting
+total_kimg: 20000                                                     # kimg for total training images
+
+ema_kimg: 160.0                                                       # equals batch_gpu * num_gpus * 10 / 32, consistent with StyleGAN-T
+ema_rampup: 0.05                                                      # if resume, set to None, otherwise set to 0.05, consistent with StyleGAN-T
+metrics: []                                                           # evaluation metrics, default empty
+cudnn_benchmark: True                                                 # whether to enable cudnn benchmark for speedup, default True
+
+
+# -----------------------------------------------------------------------------
+# Resume / Misc
+# -----------------------------------------------------------------------------
+resume_path: null                                                     # path to resume checkpoint, set to null for training from scratch
+resume_kimg: 0                                                        # kimg to resume from
+resume_discriminator: True                                            # whether to resume discriminator state
