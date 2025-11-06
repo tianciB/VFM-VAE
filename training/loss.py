@@ -679,10 +679,14 @@ class TotalLoss:
             if skip_d_loss_synced:
                 d_loss = torch.nan_to_num(d_loss, nan=0.0, posinf=0.0, neginf=0.0) * 0.0 # to release the computation graph
                 training_stats.report('Loss/D/skipped', 1.0)
-                for k in d_loss_names:
-                    training_stats.report(f'Loss/D/is_safe/{k}', int(d_loss_safe_mark_dict_synced[k]))
-                    if not d_loss_safe_mark_dict_synced[k]:
-                        dist.print0(f"[SafeLoss][D] Unsafe {k} at {cur_nimg//1000} kimg - skipping.")
+            else:
+                training_stats.report('Loss/D/skipped', 0.0)
+            
+            # Log safe marks.
+            for k in d_loss_names:
+                training_stats.report(f'Loss/D/is_safe/{k}', int(d_loss_safe_mark_dict_synced[k]))
+                if not d_loss_safe_mark_dict_synced[k]:
+                    dist.print0(f"[SafeLoss][D] Unsafe {k} at {cur_nimg//1000} kimg - skipping.")
 
             # Backward pass for discriminator.
             d_loss.backward()
@@ -923,10 +927,14 @@ class TotalLoss:
             if skip_g_loss_synced:
                 g_loss = torch.nan_to_num(g_loss, nan=0.0, posinf=0.0, neginf=0.0) * 0.0 # to release the computation graph
                 training_stats.report('Loss/G/skipped', 1.0)
-                for k in g_loss_names:
-                    training_stats.report(f'Loss/G/is_safe/{k}', int(g_loss_safe_mark_dict_synced[k]))
-                    if not g_loss_safe_mark_dict_synced[k]:
-                        dist.print0(f"[SafeLoss][G] Unsafe {k} at {cur_nimg//1000} kimg - skipping.")
+            else:
+                training_stats.report('Loss/G/skipped', 0.0)        
+
+            # Log safe marks.
+            for k in g_loss_names:
+                training_stats.report(f'Loss/G/is_safe/{k}', int(g_loss_safe_mark_dict_synced[k]))
+                if not g_loss_safe_mark_dict_synced[k]:
+                    dist.print0(f"[SafeLoss][G] Unsafe {k} at {cur_nimg//1000} kimg - skipping.")
             
             # Backward pass for generator.
             g_loss.backward()

@@ -124,7 +124,7 @@ def main():
     # Extract model construction parameters
     vae_kwargs = full_cfg.get("G_kwargs", {})
     vae_kwargs["label_dim"] = 1000                  # default for ImageNet
-    vae_kwargs["img_resolution"] = args.resolution  # set resolution
+    vae_kwargs["img_resolution"] = 256              # default resolution  
     vae_kwargs["conditional"] = False               # reconstruction is unconditional
     vae_kwargs["label_type"] = "cls2text"           # dummy, not used
     vae_kwargs["num_fp16_res"] = 0                  # disable fp16 for validation
