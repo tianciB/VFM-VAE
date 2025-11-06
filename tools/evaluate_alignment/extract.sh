@@ -13,6 +13,8 @@ torchrun --nnodes=1 --nproc_per_node=8 --standalone tools/evaluate_alignment/vfm
     --input-dir your_path/transformed_images \
     --output-dir your_path/outputs \
     --output-prefix siglip2_large \
+    --model-path your_path/huggingface/siglip2-large-patch16-512/ \
+    --resolution 512 \
     --mode {clean, equivariance, noise}
 
 # 2. Extract VAE features for transformed images
@@ -37,6 +39,7 @@ torchrun --nnodes=1 --nproc_per_node=8 --standalone tools/evaluate_alignment/vae
     --output-prefix vfm_vae_40m \
     --vae-pth your_path/vfm_vae.pth \
     --use-config configs/vae_config.yaml \
+    --resolution 256 \
     --mode {clean, equivariance, noise}
 
 # 3. Extract Diffusion features for transformed images

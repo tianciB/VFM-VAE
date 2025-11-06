@@ -116,9 +116,10 @@ def cleanup_distributed():
 
 def load_siglip2_model(args, device):
     encoder = SigLIP2Encoder(
+        model_name=args.model_path,
         conditional=False,
         label_type='cls2text',
-        model_name=args.model_path,
+        scale_factor=1.0,
         patch_from_layers=[-1],
         amp_enabled=True,
         amp_dtype=torch.bfloat16
@@ -271,8 +272,8 @@ def main():
     p.add_argument('--output-prefix', type=str, required=True,
                    help='Prefix for output files')
     p.add_argument('--mode', type=str, choices=['clean', 'noise', 'equivariance'], default='clean')
-    p.add_argument('--model-path', type=str, default='../huggingface/siglip2-large-patch16-512/')
-    p.add_argument('--resolution', type=int, default=256)
+    p.add_argument('--model-path', type=str, default='your_path/huggingface/siglip2-large-patch16-512/')
+    p.add_argument('--resolution', type=int, default=512)
     p.add_argument('--batch-size-per-gpu', type=int, default=32)
     p.add_argument('--num-workers', type=int, default=4)
     p.add_argument('--seed', type=int, default=42)
