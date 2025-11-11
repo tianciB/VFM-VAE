@@ -121,9 +121,14 @@ def main(config):
     # -------------------------------------------------------------
     # 4. Auto compute total batch size
     # -------------------------------------------------------------
-    if "batch_size" not in c and "batch_gpu" in c:
-        c.batch_size = c.batch_gpu * world_size
-        dist.print0(f"[INFO] Auto-computed batch_size={c.batch_size} (batch_gpu={c.batch_gpu} * {world_size} GPUs)")
+    if "accumulate_gradients" not in c:
+        c.accumulate_gradients = 1
+
+    c.batch_size = c.batch_size
+    assert c.batch_size % (world_size * c.accumulate_gradients) == 0, \
+        f"batch_size {c.batch_size} must be divisible by (world_size {world_size} * accumulate_gradients {c.accumulate_gradients})"
+    c.batch_gpu = c.batch_size // (world_size * c.accumulate_gradients)
+    dist.print0(f"[INFO] Auto-computed batch size={c.batch_size}, batch gpu={c.batch_gpu}, gpu count={world_size}, accumulate gradients={c.accumulate_gradients}")
 
     # -------------------------------------------------------------
     # 5. Random seed & CUDNN setup

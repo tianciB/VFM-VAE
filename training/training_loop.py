@@ -435,6 +435,7 @@ def training_loop(
     random_seed                         = 0,         # Global random seed.
     batch_size                          = 4,         # Total batch size for one training iteration. Can be larger than batch_gpu * num_gpus.
     batch_gpu                           = 4,         # Number of samples processed at a time by one GPU.
+    accumulate_gradients                = 1,         # Number of gradient accumulation steps before a backward/update pass.
     ema_kimg                            = 10,        # Half-life of the exponential moving average (EMA) of generator weights.
     ema_rampup                          = 0.05,      # EMA ramp-up coefficient. None = no rampup.
     total_kimg                          = 25000,     # Total length of the training, measured in thousands of real images.
@@ -463,11 +464,7 @@ def training_loop(
     conv2d_gradfix.enabled = True                       # Improves training speed.
 
     # Select batch size per GPU.
-    batch_gpu_total = batch_size // dist.get_world_size()
-    if batch_gpu is None or batch_gpu > batch_gpu_total:
-        batch_gpu = batch_gpu_total
-    n_batch_acc = batch_gpu_total // batch_gpu
-    assert batch_size == batch_gpu * n_batch_acc * dist.get_world_size()
+    n_batch_acc = accumulate_gradients
 
     # Load training set. Choose between WDS and zip dataloader.
     dist.print0('Loading training set...')

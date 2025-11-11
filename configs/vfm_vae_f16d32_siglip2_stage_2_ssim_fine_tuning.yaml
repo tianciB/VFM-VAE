@@ -159,7 +159,8 @@ D_opt_kwargs:
 # -----------------------------------------------------------------------------
 # Training setup (flattened to match training_loop)
 # -----------------------------------------------------------------------------
-batch_gpu: 32                 # batch size per GPU, we use 8 GPUs default
+batch_size: 512               # total batch size across all GPUs
+accumulate_gradients: 1       # accumulate gradients over N steps
 kimg_per_tick: 10             # 10k images per tick for logging and snapshotting
 image_snapshot_ticks: 100     # 100 ticks for image snapshotting
 network_snapshot_ticks: 100   # 100 ticks for network snapshotting
