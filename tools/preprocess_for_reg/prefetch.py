@@ -289,7 +289,7 @@ def run_extraction(
 
         compute_vae_stats_sampled(vae_dir)
         
-        # Optional: tar the folders
+        # Optional: tar the folders for large file transfer
         # subprocess.run(["tar", "cf", f"{vae_dir}.tar", "-C", vae_dir, "."], check=True)
         # if process_images:
         #     subprocess.run(["tar", "cf", f"{images_dir}.tar", "-C", images_dir, "."], check=True)
@@ -307,7 +307,7 @@ def main():
     parser.add_argument("--output-dir", type=str, required=True, help="Output directory for extracted data")
     parser.add_argument("--vae-pth", type=str, required=True, help="Path to pretrained VAE checkpoint (.pth)")
     parser.add_argument("--use-config", type=str, required=True, help="Path to YAML config defining model")
-    parser.add_argument("--image-resolution", type=int, default=256)
+    parser.add_argument("--resolution", type=int, default=256)
     parser.add_argument("--batch-size-per-gpu", type=int, default=64)
     parser.add_argument("--max-images-per-gpu", type=int, default=None)
     parser.add_argument("--no-images", action="store_true", help="Skip PNG saving")
@@ -333,6 +333,9 @@ def main():
     vae_kwargs["img_resolution"] = args.resolution  # set resolution
     vae_kwargs["conditional"] = False               # reconstruction is unconditional
     vae_kwargs["label_type"] = "cls2text"           # dummy, not used
+    vae_kwargs["use_kl_loss"] = False               # disable KL loss for validation
+    vae_kwargs["use_vf_loss"] = False               # disable VF loss for validation
+    vae_kwargs["num_fp16_res"] = 0                  # disable fp16 for validation
 
     # Build model
     vae_model = dnnlib.util.construct_class_by_name(**vae_kwargs).to(device)
@@ -359,7 +362,7 @@ def main():
         output_dir=args.output_dir,
         rank=rank,
         device=device,
-        resolution=args.image_resolution,
+        resolution=args.resolution,
         batch_size_per_gpu=args.batch_size_per_gpu,
         process_images=not args.no_images,
         images_folder_name=args.images_folder_name,

@@ -1,0 +1,25 @@
+accelerate launch --multi_gpu --num_processes 8 train.py \
+    --report-to="wandb" \
+    --allow-tf32 \
+    --mixed-precision="fp16" \
+    --seed=0 \
+    --path-type="linear" \
+    --prediction="v" \
+    --weighting="uniform" \
+    --model="SiT-XL/1" \
+    --enc-type="dinov2-vit-b" \
+    --proj-coeff=0.5 \
+    --encoder-depth=8 \
+    --output-dir="your_path/output" \
+    --exp-name="reg_sit_xl_1_with_vfm_vae" \
+    --batch-size=1024 \
+    --num-workers 8 \
+    --learning-rate 2e-4 \
+    --adam-beta2 0.95 \
+    --max-train-steps 800_000 \
+    --checkpointing-steps 10_000 \
+    --data-dir="your_path/data" \
+    --latent-size=16 \
+    --vae-latent-dim=32 \
+    --cls=0.03 \
+    --qk-norm

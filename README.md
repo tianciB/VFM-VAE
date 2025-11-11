@@ -298,7 +298,8 @@ Then launch distributed training:
 torchrun --nnodes=1 --nproc_per_node=8 --standalone train.py \
   --config your_path/vae_config.yaml
 ```
-The training loss curves is logged to [Weights & Biases](https://wandb.ai/) and model checkpoints are automatically saved under `run_dir`.
+The training loss curves is logged to [Weights & Biases](https://wandb.ai/) and model checkpoints are automatically saved under `run_dir`.  
+⚠️ Note: If frequent unsafe loss warnings occur, we recommend setting `num_fp16_res` to 0 to use full FP32 precision training for better stability.
 
 #### 2. Pre-extract Latent Features for Diffusion
 

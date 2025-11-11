@@ -56,8 +56,6 @@ G_kwargs:
   z_dim_for_mapping_mlp_output: 512
 
   # Alignment settings
-  use_kl_loss: True
-  use_vf_loss: True
   distmat_margin: 0.0
   cos_margin: 0.0
   distmat_weight: 1.0

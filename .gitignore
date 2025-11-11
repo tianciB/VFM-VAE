@@ -5,7 +5,7 @@ wandb/*
 # Train Configs
 train_configs/
 train_configs/*
-train.sh
+/train.sh
 **/run.sh
 
 # --- AMLT / Config ---

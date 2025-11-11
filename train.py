@@ -75,13 +75,6 @@ def main(config):
         c.resume_path = None
 
     if "G_kwargs" in c:
-
-        if "use_adaptive_vf_loss" not in c.G_kwargs and "use_adaptive_vf_loss" in c.loss_kwargs:
-            c.G_kwargs.use_adaptive_vf_loss = c.loss_kwargs.get("use_adaptive_vf_loss", False)
-
-        if "use_equivariance_regularization" not in c.G_kwargs and "use_equivariance_regularization" in c.loss_kwargs:
-            c.G_kwargs.use_equivariance_regularization = c.loss_kwargs.get("use_equivariance_regularization", False)
-
         if "resolution" not in c.G_kwargs and "resolution" in c.training_set_kwargs:
             c.G_kwargs.img_resolution = c.training_set_kwargs.get("resolution", None)
 
@@ -90,6 +83,18 @@ def main(config):
 
         if "label_type" not in c.G_kwargs and "label_type" in c.training_set_kwargs:
             c.G_kwargs.label_type = c.training_set_kwargs.get("label_type", None)
+
+        if "use_kl_loss" not in c.G_kwargs and "kl_loss_weight" in c.loss_kwargs:
+            c.G_kwargs.use_kl_loss = c.loss_kwargs.get("kl_loss_weight", 0.0) > 0.0
+        
+        if "use_vf_loss" not in c.G_kwargs and "vf_loss_weight" in c.loss_kwargs:
+            c.G_kwargs.use_vf_loss = c.loss_kwargs.get("vf_loss_weight", 0.0) > 0.0
+
+        if "use_adaptive_vf_loss" not in c.G_kwargs and "use_adaptive_vf_loss" in c.loss_kwargs:
+            c.G_kwargs.use_adaptive_vf_loss = c.loss_kwargs.get("use_adaptive_vf_loss", False)
+
+        if "use_equivariance_regularization" not in c.G_kwargs and "use_equivariance_regularization" in c.loss_kwargs:
+            c.G_kwargs.use_equivariance_regularization = c.loss_kwargs.get("use_equivariance_regularization", False)
 
     if "D_kwargs" in c:
         if "vfm_name" not in c.D_kwargs and "G_kwargs" in c:

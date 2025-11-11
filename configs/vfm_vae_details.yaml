@@ -61,8 +61,6 @@ G_kwargs:
   z_dim_for_mapping_mlp_output: 512                                   # output dimension after mapping MLP for global representation
 
   # Alignment settings
-  use_kl_loss: True                                                   # whether to use KL loss
-  use_vf_loss: True                                                   # whether to use vision foundation alignment loss
   distmat_margin: 0.0                                                 # margin for distance matrix loss in VF alignment
   cos_margin: 0.0                                                     # margin for cosine similarity loss in VF alignment
   distmat_weight: 1.0                                                 # weight for distance matrix loss in VF alignment

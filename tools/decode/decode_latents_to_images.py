@@ -127,6 +127,8 @@ def main():
     vae_kwargs["img_resolution"] = 256              # default resolution  
     vae_kwargs["conditional"] = False               # reconstruction is unconditional
     vae_kwargs["label_type"] = "cls2text"           # dummy, not used
+    vae_kwargs["use_kl_loss"] = False               # disable KL loss for validation
+    vae_kwargs["use_vf_loss"] = False               # disable VF loss for validation
     vae_kwargs["num_fp16_res"] = 0                  # disable fp16 for validation
 
     # --- Initialize DDP ---
