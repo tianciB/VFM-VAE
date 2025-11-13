@@ -359,6 +359,7 @@ class SynthesisBlock(torch.nn.Module):
         self.last_out_channels = last_out_channels # for upsampling
         self.c_dim = c_dim
         self.w_dim = w_dim
+        self.resolution = resolution
         self.img_channels = img_channels
         self.is_last = is_last
         self.architecture = architecture

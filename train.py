@@ -96,6 +96,9 @@ def main(config):
         if "use_equivariance_regularization" not in c.G_kwargs and "use_equivariance_regularization" in c.loss_kwargs:
             c.G_kwargs.use_equivariance_regularization = c.loss_kwargs.get("use_equivariance_regularization", False)
 
+        if "use_multiscale_output" not in c.G_kwargs and "multiscale_block_indices" in c.loss_kwargs:
+            c.G_kwargs.use_multiscale_output = len(c.loss_kwargs.get("multiscale_block_indices", [])) > 0
+
     if "D_kwargs" in c:
         if "vfm_name" not in c.D_kwargs and "G_kwargs" in c:
             c.D_kwargs.vfm_name = c.G_kwargs.get("vfm_name", None)
