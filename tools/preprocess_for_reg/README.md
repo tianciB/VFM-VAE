@@ -13,7 +13,8 @@ It includes latent preprocessing, model modification instructions, diffusion tra
 |:--|:--|
 | `prefetch.py` | Extract and encode ImageNet images into `.safetensors` latents using a pretrained VFM-VAE. |
 | `train.py` | Modified REG training script supporting latent integration and additional training options. |
-| `sit.py` | Updated SiT backbone implementation with QK-Norm and `torch.compile` for faster and more stable training. |
+| `sit.py` | Updated SiT backbone implementation with QK-Norm for stable training. |
+| `loss.py` | Adapted for DeepSpeed + mixed-precision. |
 | `sample.py` | Sampling script for generating diffusion latents from trained REG models. |
 | `*.sh` | Example shell scripts for prefetching, training, and sampling. |
 ---
@@ -43,9 +44,11 @@ The corresponding latent mean and variance statistics (for channel normalization
 
 Before launching training, replace the following files in the REG repository:
 
- - `models/sit.py` → use the version provided here (adds SiT-XL/1, QK-Norm, and torch.compile support).
+ - `models/sit.py` → use the version provided here (adds SiT-XL/1, QK-Norm support).
 
  - `train.py` → use the version here to include latent-related parameters (latent size, dimension, and encoder configs).
+
+ - `loss.py` → use the version here to adapt for DeepSpeed + mixed-precision.
 
 REG training is conducted with the following recommended configuration:
 
@@ -80,7 +83,10 @@ Key settings:
  - `batch-size = 1024`
  - `learning-rate = 2e-4`
  - `adam-beta2 = 0.95`
- - Long-term stable training enabled via `QK-Norm` and `torch.compile`
+ - Long-term stable training enabled via `QK-Norm`
+ - Fast training enabled via `DeepSpeed`
+
+⚠️ **Note:** `batch-size` is the batch size per micro forward, `batch-size-per-gpu` is the batch size per gpu per micro forward, aligned with REG.
 
 Pretrained REG diffusion checkpoints are available on [Hugging Face — VFM-VAE REG Models](https://huggingface.co/tiancibi/VFM-VAE/tree/main/checkpoints_imagenet256/diffusions/reg_with_vfm_vae).
 

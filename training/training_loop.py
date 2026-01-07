@@ -194,7 +194,12 @@ def save_reconstructions(
     save_image(all_gens, gen_image_path, nrow=8)
 
 
-def network_summaries(G: nn.Module, D: nn.Module, training_set: dnnlib.EasyDict, device: torch.device) -> None:
+def network_summaries(
+    G: nn.Module, 
+    D: nn.Module, 
+    training_set: dnnlib.EasyDict, 
+    device: torch.device
+) -> None:
     """ Print network summaries. """
     
     # Fake image and label.
@@ -220,6 +225,43 @@ def network_summaries(G: nn.Module, D: nn.Module, training_set: dnnlib.EasyDict,
     gen_img = generator_output.gen_img
     c_enc = generator_output.global_text_tokens
     misc.print_module_summary(D, [gen_img, c_enc if training_set.label_type in ['text', 'cls2text'] else c])
+
+
+def load_state_dict_with_report(
+    module: torch.nn.Module,
+    state_dict: dict,
+    name: str,
+    strict: bool = False,
+    max_items: int = 20,
+):
+    """
+    Load state_dict and explicitly report missing / unexpected keys.
+    Only call on rank0.
+    """
+    incompatible = module.load_state_dict(state_dict, strict=strict)
+
+    missing = list(incompatible.missing_keys)
+    unexpected = list(incompatible.unexpected_keys)
+
+    if dist.get_rank() == 0:
+        if len(missing) == 0 and len(unexpected) == 0:
+            dist.print0(f"[resume:{name}] ✓ state_dict fully matched.")
+        else:
+            dist.print0(f"[resume:{name}] ⚠ state_dict mismatch detected:")
+            if missing:
+                dist.print0(f"  - Missing keys ({len(missing)}):")
+                for k in missing[:max_items]:
+                    dist.print0(f"      {k}")
+                if len(missing) > max_items:
+                    dist.print0(f"      ... ({len(missing) - max_items} more)")
+            if unexpected:
+                dist.print0(f"  - Unexpected keys ({len(unexpected)}):")
+                for k in unexpected[:max_items]:
+                    dist.print0(f"      {k}")
+                if len(unexpected) > max_items:
+                    dist.print0(f"      ... ({len(unexpected) - max_items} more)")
+
+    return incompatible
 
 
 # -----------------------------------------------------------------# 
@@ -531,21 +573,39 @@ def training_loop(
     G = dnnlib.util.construct_class_by_name(label_dim=training_set.label_dim, **G_kwargs).train().requires_grad_(False).to(device)
     G_ema = copy.deepcopy(G).eval() # EMA model, always in eval mode
     D = dnnlib.util.construct_class_by_name(c_dim=G.c_dim, **D_kwargs).train().requires_grad_(False).to(device)
-
-    # Check for existing checkpoint
+    
+    # Load networks with detailed report.
     if resume_path is not None and dist.get_rank() == 0:
         dist.print0(f"Resuming from {resume_path}")
         checkpoint = torch.load(resume_path, map_location=device)
+
         if resume_discriminator and "D" in checkpoint:
-            D.load_state_dict(checkpoint["D"], strict=False)
-            dist.print0("Discriminator weights loaded from .pth checkpoint.")
+            load_state_dict_with_report(
+                D,
+                checkpoint["D"],
+                name="D",
+                strict=False,
+            )
         else:
-            dist.print0("Skipping discriminator weights loading.")
+            dist.print0("[resume:D] skipped.")
+
         if "G" in checkpoint:
-            G.load_state_dict(checkpoint["G"], strict=False)
+            load_state_dict_with_report(
+                G,
+                checkpoint["G"],
+                name="G",
+                strict=False,
+            )
+
         if "G_ema" in checkpoint:
-            G_ema.load_state_dict(checkpoint["G_ema"], strict=False)
-        dist.print0("Generator and EMA weights loaded from .pth checkpoint.")
+            load_state_dict_with_report(
+                G_ema,
+                checkpoint["G_ema"],
+                name="G_ema",
+                strict=False,
+            )
+
+        dist.print0("Resume loading finished.")
 
     # Print network summary tables.
     if dist.get_rank() == 0:
@@ -597,8 +657,8 @@ def training_loop(
         wandb.init(
             project=wandb_project_name,
             name=wandb_run_name,
-            id=str(uuid.uuid4()),
-            resume="never",
+            resume="allow",
+            dir=run_dir,
             config={
                 "batch_size_per_gpu": batch_gpu,
                 "accumulation_steps": n_batch_acc,

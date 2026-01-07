@@ -105,6 +105,21 @@ def run_latent_decoding(
     print(f"[Rank {rank}] Done. Saved {saved_count} images.")
 
 
+def report_incompatible_keys(module_name, incompatible):
+    if incompatible.missing_keys:
+        print(f"[{module_name}] Missing keys ({len(incompatible.missing_keys)}):")
+        for k in incompatible.missing_keys:
+            print(f"  - {k}")
+
+    if incompatible.unexpected_keys:
+        print(f"[{module_name}] Unexpected keys ({len(incompatible.unexpected_keys)}):")
+        for k in incompatible.unexpected_keys:
+            print(f"  - {k}")
+    
+    if not incompatible.missing_keys and not incompatible.unexpected_keys:
+        print(f"[{module_name}] All keys matched successfully.")
+
+
 # --------------------------- Main --------------------------- #
 def main():
     import argparse
@@ -156,7 +171,8 @@ def main():
     else:
         raise TypeError(f"❌ Unexpected checkpoint type: {type(checkpoint)}")
 
-    vae_decoder.load_state_dict(state_dict, strict=False)
+    incompatible = vae_decoder.load_state_dict(state_dict, strict=False)
+    report_incompatible_keys("vae", incompatible)
     vae_decoder.eval()
 
     # --- Run decoding ---

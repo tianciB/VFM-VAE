@@ -196,7 +196,7 @@ class SynthesisLayer(torch.nn.Module):
         resolution: int,                         # Resolution of this layer.
         kernel_size: int = 3,                    # Convolution kernel size.
         up: int = 1,                             # Integer upsampling factor.
-        use_noise: bool = False,                 # Enable noise input?
+        use_noise: bool = True,                  # Enable noise input?
         activation: str = 'lrelu',               # Activation function: 'relu', 'lrelu', etc.
         resample_filter: list[int] = [1,3,3,1],  # Low-pass filter to apply when resampling activations.
         conv_clamp: Optional[int] = None,        # Clamp the output of convolution layers to +-X, None = disable clamping.
@@ -1006,8 +1006,8 @@ class Generator(torch.nn.Module):
         )
         self.patch_resolutions = [int(img_resolution * scale_factor // self.vfm_encoder.patch_size) for _ in patch_from_layers]
 
-        assert img_resolution % self.vfm_encoder.patch_size == 0, \
-            f'Image resolution {img_resolution} must be divisible by the vision foundation model patch size {self.vfm_encoder.patch_size}.'
+        assert img_resolution * scale_factor % self.vfm_encoder.patch_size == 0, \
+            f'Image resolution {img_resolution * scale_factor} must be divisible by the vision foundation model patch size {self.vfm_encoder.patch_size}.'
 
         # Latent settings.
         self.z_resolution = int(img_resolution // resolution_compression_factor)

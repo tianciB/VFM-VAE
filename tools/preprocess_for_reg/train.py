@@ -8,9 +8,8 @@
 # This version includes minor modifications to support:
 #    - parse_args for latent dimensions
 #    - auto-resume from latest checkpoint
-#    - support qk-norm and compile option
+#    - support qk-norm and deepspeed options
 # ------------------------------------------------------------------------------
-
 
 
 import os
@@ -30,7 +29,7 @@ from torchvision.utils import make_grid
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from tqdm.auto import tqdm
 
-from accelerate import Accelerator, DistributedDataParallelKwargs
+from accelerate import Accelerator, DistributedDataParallelKwargs, DeepSpeedPlugin
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 
@@ -39,12 +38,10 @@ from loss import SILoss
 from utils import load_encoders
 from dataset import CustomDataset
 
-
 logger = get_logger(__name__)
 
 CLIP_DEFAULT_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_DEFAULT_STD = (0.26862954, 0.26130258, 0.27577711)
-
 
 
 def preprocess_raw_image(x, enc_type):
@@ -132,12 +129,21 @@ def main(args):
         project_dir=args.output_dir, logging_dir=logging_dir
         )
 
+    deepspeed_plugin = None
+    if args.use_deepspeed:
+        deepspeed_plugin = DeepSpeedPlugin(
+            zero_stage=args.deepspeed_stage,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            gradient_clipping=args.max_grad_norm,
+        )
+
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
-        kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)]
+        kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)],
+        deepspeed_plugin=deepspeed_plugin,
     )
 
     if accelerator.is_main_process:
@@ -158,8 +164,8 @@ def main(args):
         accelerator.native_amp = False    
     if args.seed is not None:
         set_seed(args.seed + accelerator.process_index)
-    
-    # Create model
+
+    # Create model    
     assert args.resolution % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
     latent_size = args.latent_size
     latent_dim = args.vae_latent_dim
@@ -195,14 +201,17 @@ def main(args):
         vae_folder=args.vae_folder
         )
     # Get latent stats for VAE normalization
-    latents_stats_path = os.path.join(args.data_dir, args.vae_folder, "latent_stats.pt")
+    latents_stats_path = os.path.join(args.data_dir, args.vae_folder, "latents_stats.pt")
     if os.path.exists(latents_stats_path):
         latents_stats = torch.load(latents_stats_path, map_location='cpu')
         latents_mean = latents_stats['mean'].reshape(1, args.vae_latent_dim, 1, 1).to(device)
         latents_std = latents_stats['std'].reshape(1, args.vae_latent_dim, 1, 1).to(device)
+        print(f"Loaded VAE latents stats from  {latents_stats_path}")
     else:
-        latents_mean = torch.zeros((1, args.vae_latent_dim, 1, 1)).to(device)
-        latents_std = torch.full((1, args.vae_latent_dim, 1, 1), 1.0 / 0.18215).to(device)
+        # Fallback to default values
+        latents_mean = torch.tensor([0.] * args.vae_latent_dim).view(1, args.vae_latent_dim, 1, 1).to(device)
+        latents_std = torch.tensor([1 / 0.18215] * args.vae_latent_dim).view(1, args.vae_latent_dim, 1, 1).to(device)
+        print(f"No latents stats found at {latents_stats_path}, using default mean/std.")
 
     # create loss function
     loss_fn = SILoss(
@@ -215,7 +224,6 @@ def main(args):
     if accelerator.is_main_process:
         logger.info(f"SiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Setup optimizer (we used default Adam betas=(0.9, 0.95) and a constant learning rate of 1e-4 in our paper):
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -228,7 +236,12 @@ def main(args):
         eps=args.adam_epsilon,
     )    
     
-    local_batch_size = int(args.batch_size // accelerator.num_processes)
+    # per-micro forward batch size
+    if args.batch_size_per_gpu is None:
+        local_batch_size = int(args.batch_size // accelerator.num_processes)
+    else:
+        local_batch_size = int(args.batch_size_per_gpu)
+
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=local_batch_size,
@@ -282,10 +295,14 @@ def main(args):
     if accelerator.is_main_process:
         tracker_config = vars(copy.deepcopy(args))
         accelerator.init_trackers(
-            project_name="REG",
+            project_name="VFM-VAE",
             config=tracker_config,
             init_kwargs={
-                "wandb": {"name": f"{args.exp_name}"}
+                "wandb": {
+                    "name": f"{args.exp_name}",
+                    "group": "LDM-diffusion, REG",
+                    "dir": save_dir,
+                }
             },
         )
 
@@ -320,7 +337,7 @@ def main(args):
             with torch.no_grad():
                 # Sample VAE posterior
                 x = sample_posterior(x, latents_mean, latents_std)
-                
+
                 # Process encoders
                 zs = []
                 cls_token = None
@@ -338,20 +355,25 @@ def main(args):
                         zs.append(dense_z)
 
             with accelerator.accumulate(model):
-                model_kwargs = dict(y=labels)
-                loss1, proj_loss1, time_input, noises, loss2 = loss_fn(model, x, model_kwargs, zs=zs,
-                                                                       cls_token=cls_token,
-                                                                       time_input=None, noises=None)
-                loss_mean = loss1.mean()
-                loss_mean_cls = loss2.mean() * args.cls
-                proj_loss_mean = proj_loss1.mean() * args.proj_coeff
-                loss = loss_mean + proj_loss_mean + loss_mean_cls
+                with accelerator.autocast():
+                    model_kwargs = dict(y=labels)
+                    loss1, proj_loss1, time_input, noises, loss2 = loss_fn(model, x, model_kwargs, zs=zs,
+                                                                        cls_token=cls_token,
+                                                                        time_input=None, noises=None)
+                    loss_mean = loss1.mean()
+                    loss_mean_cls = loss2.mean() * args.cls
+                    proj_loss_mean = proj_loss1.mean() * args.proj_coeff
+                    loss = loss_mean + proj_loss_mean + loss_mean_cls
 
                 ## optimization
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     params_to_clip = model.parameters()
                     grad_norm = accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    if not torch.is_tensor(grad_norm):
+                        grad_norm = torch.tensor(grad_norm, device=device)
+                else:
+                    grad_norm = torch.tensor(0.0, device=device)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
@@ -416,6 +438,10 @@ def parse_args(input_args=None):
     parser.add_argument("--sampling-steps", type=int, default=10000)
     parser.add_argument("--resume-step", type=int, default=0)
 
+    # deepspeed
+    parser.add_argument("--use-deepspeed", action="store_true")
+    parser.add_argument("--deepspeed-stage", type=int, default=2, choices=[2, 3])
+
     # model
     parser.add_argument("--model", type=str)
     parser.add_argument("--num-classes", type=int, default=1000)
@@ -428,6 +454,7 @@ def parse_args(input_args=None):
     parser.add_argument("--data-dir", type=str, default="../reg/imagenet_train_256x256/")
     parser.add_argument("--resolution", type=int, choices=[256, 512], default=256)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size-per-gpu", type=int, default=None)
     parser.add_argument("--image-folder", type=str, default="images", help="Raw images folder")
     parser.add_argument("--vae-folder", type=str, default="vae_latents", help="VAE latents folder")
     

@@ -4,6 +4,7 @@
 
 
 import os
+import ast
 import sys
 import yaml
 import dnnlib
@@ -279,7 +280,8 @@ def run_extraction(
             for f in os.listdir(folder):
                 if f.startswith("dataset_rank") and f.endswith(".json"):
                     with open(os.path.join(folder, f), "r") as jf:
-                        data = eval(jf.read().split("=", 1)[-1])
+                        # avoid overflow issues with json module
+                        data = ast.literal_eval(jf.read())
                     records.extend(data.get("labels", []))
             save_json(records, os.path.join(folder, final_name))
 

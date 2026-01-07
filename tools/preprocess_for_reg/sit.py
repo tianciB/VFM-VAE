@@ -22,7 +22,6 @@ def build_mlp(hidden_size, projector_dim, z_dim):
                 nn.Linear(projector_dim, z_dim),
             )
 
-# @torch.compile
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
@@ -63,7 +62,6 @@ class TimestepEmbedder(nn.Module):
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return embedding
 
-    # @torch.compile
     def forward(self, t):
         self.timestep_embedding = self.positional_embedding
         t_freq = self.timestep_embedding(t, dim=self.frequency_embedding_size).to(t.dtype)
@@ -93,7 +91,6 @@ class LabelEmbedder(nn.Module):
         labels = torch.where(drop_ids, self.num_classes, labels)
         return labels
 
-    # @torch.compile
     def forward(self, labels, train, force_drop_ids=None):
         use_dropout = self.dropout_prob > 0
         if (train and use_dropout) or (force_drop_ids is not None):
@@ -130,7 +127,6 @@ class SiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
-    @torch.compile
     def forward(self, x, c):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
             self.adaLN_modulation(c).chunk(6, dim=-1)
@@ -155,7 +151,6 @@ class FinalLayer(nn.Module):
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
 
-    # @torch.compile
     def forward(self, x, c, cls=None):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
         x = modulate(self.norm_final(x), shift, scale)
